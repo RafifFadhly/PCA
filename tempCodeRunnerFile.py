@@ -144,7 +144,7 @@ if __name__ == "__main__":
     path_wajah_1 = r"D:\\TEKNIK_INFORMATIKA\SEMESTER 2\ALJABAR LINEAR\\UAS\\s3.jpeg"  # Ganti dengan path foto pertama
     path_wajah_2 = r"D:\\TEKNIK_INFORMATIKA\SEMESTER 2\ALJABAR LINEAR\\UAS\\s3.jpeg"  # Ganti dengan path foto kedua
     
-    # Gunakan threshold 0.80 sesuai contoh di dokumen [cite: 137, 211]
+    # Gunakan threshold 0.75 sesuai contoh di dokumen [cite: 137, 211]
     THRESHOLD_VALUE = 0.75 
     
     similarity_score, status = compare_faces(path_wajah_1, path_wajah_2, pca, threshold=THRESHOLD_VALUE)

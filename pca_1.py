@@ -1,164 +1,253 @@
+"""
+pca_1.py — Kompresi Gambar Menggunakan PCA
+Menggunakan PCA untuk mereduksi dimensi gambar grayscale,
+kemudian merekonstruksi gambar dari komponen utama yang lebih sedikit.
+"""
+
 import cv2
 import numpy as np
-import os
 from sklearn.decomposition import PCA
-from sklearn.metrics.pairwise import cosine_similarity
+import os
 
-# Ukuran standar gambar wajah sesuai dokumen
-IMG_SIZE = (100, 100)
 
 # ==========================================
-# 1. FUNGSI DETEKSI DAN PREPROCESSING
+# 1. LOAD DAN PREPROCESS GAMBAR
 # ==========================================
-def detect_and_crop_face(image_path):
+def load_image_grayscale(image_input):
     """
-    Mendeteksi wajah dari gambar menggunakan Haar Cascade, 
-    lalu mengembalikan crop wajah yang sudah di-preprocess.
+    Membaca gambar dan mengubah ke grayscale.
+
+    Args:
+        image_input: path file (str) atau numpy array BGR/grayscale
+
+    Returns:
+        img_gray (np.ndarray): gambar grayscale uint8
     """
-    img = cv2.imread(image_path)
-    if img is None:
-        raise ValueError(f"Gambar tidak ditemukan: {image_path}")
-
-    # Ubah ke grayscale
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # Inisialisasi Haar Cascade untuk deteksi wajah frontal 
-    face_cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
-
-    # Deteksi wajah
-    faces = face_cascade.detectMultiScale(
-        gray,
-        scaleFactor=1.1,
-        minNeighbors=5
-    )
-
-    if len(faces) == 0:
-        raise ValueError(f"Wajah tidak terdeteksi pada gambar: {image_path}")
-
-    # Ambil wajah pertama yang terdeteksi 
-    x, y, w, h = faces[0]
-    
-    # Crop area wajah [cite: 260]
-    face_crop = gray[y:y+h, x:x+w]
-    
-    # Resize ke ukuran standar 100x100 [cite: 260]
-    face_resized = cv2.resize(face_crop, IMG_SIZE)
-    
-    # Normalisasi nilai piksel ke rentang 0-1 [cite: 260]
-    face_normalized = face_resized / 255.0
-    
-    # Flatten menjadi vektor 1D [cite: 260]
-    return face_normalized.flatten()
-
-# ==========================================
-# 2. PERSIAPAN DATA LATIH (DATASET)
-# ==========================================
-def load_dataset(dataset_path):
-    """
-    Membaca seluruh gambar wajah dari folder dataset[cite: 161, 163].
-    """
-    X = []
-    labels = []
-    
-    for person_name in os.listdir(dataset_path):
-        person_folder = os.path.join(dataset_path, person_name)
-        if not os.path.isdir(person_folder):
-            continue
-            
-        for filename in os.listdir(person_folder):
-            if filename.lower().endswith((".jpg", ".jpeg", ".png")):
-                image_path = os.path.join(person_folder, filename)
-                try:
-                    # Menggunakan fungsi deteksi wajah baru
-                    vector = detect_and_crop_face(image_path)
-                    X.append(vector)
-                    labels.append(person_name)
-                except ValueError as e:
-                    print(f"Melewati {filename}: {e}")
-                    
-    return np.array(X), np.array(labels)
-
-# ==========================================
-# 3. FUNGSI PERBANDINGAN WAJAH (DATA UJI)
-# ==========================================
-def compare_faces(image_path_1, image_path_2, pca_model, threshold=0.80):
-    """
-    Membandingkan dua gambar wajah menggunakan PCA dan cosine similarity[cite: 191].
-    """
-    try:
-        # Preprocessing Data Uji
-        face_1 = detect_and_crop_face(image_path_1)
-        face_2 = detect_and_crop_face(image_path_2)
-    except ValueError as e:
-        return None, str(e)
-
-    # Ubah menjadi bentuk 2D karena PCA membutuhkan input 2D [cite: 194]
-    face_1 = face_1.reshape(1, -1)
-    face_2 = face_2.reshape(1, -1)
-
-    # Proyeksi ke ruang PCA [cite: 197, 198, 199]
-    face_1_pca = pca_model.transform(face_1)
-    face_2_pca = pca_model.transform(face_2)
-
-    # Hitung cosine similarity [cite: 200, 201]
-    similarity = cosine_similarity(face_1_pca, face_2_pca)[0][0]
-
-    # Keputusan Kemiripan
-    if similarity >= threshold:
-        result = "Mirip"
+    if isinstance(image_input, str):
+        img = cv2.imread(image_input)
+        if img is None:
+            raise ValueError(f"Gambar tidak ditemukan: {image_input}")
+    elif isinstance(image_input, np.ndarray):
+        img = image_input
+        if img.size == 0:
+            raise ValueError("Array gambar kosong.")
     else:
-        result = "Tidak mirip"
+        raise ValueError("Input harus berupa path file (str) atau numpy array.")
 
-    return similarity, result
+    if len(img.shape) == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img
+
+    return gray
+
 
 # ==========================================
-# 4. ALUR EKSEKUSI UTAMA (MAIN)
+# 2. KOMPRESI GAMBAR DENGAN PCA
+# ==========================================
+def compress_image_pca(image_input, n_components=50):
+    """
+    Mengompresi gambar menggunakan PCA.
+
+    Cara kerja:
+      - Gambar grayscale (H x W) diperlakukan sebagai matriks H baris,
+        setiap baris adalah vektor intensitas piksel 1 x W.
+      - PCA dilakukan pada baris-baris tersebut untuk mendapat
+        representasi dalam ruang berdimensi lebih rendah.
+      - Rekonstruksi dilakukan dengan inverse_transform.
+
+    Args:
+        image_input: path file (str) atau numpy array
+        n_components (int): jumlah komponen PCA (makin kecil = makin terkompresi)
+
+    Returns:
+        dict berisi:
+            'original'       : gambar asli grayscale (np.ndarray uint8)
+            'reconstructed'  : gambar rekonstruksi (np.ndarray uint8)
+            'n_components'   : komponen PCA yang digunakan
+            'max_components' : komponen maksimal yang tersedia
+            'compression_ratio': rasio kompresi (%)
+            'psnr'           : Peak Signal-to-Noise Ratio (kualitas rekonstruksi)
+            'explained_var'  : total varians yang dijelaskan (%)
+            'pca'            : objek PCA yang sudah dilatih
+    """
+    # Load gambar
+    gray = load_image_grayscale(image_input)
+    H, W = gray.shape
+
+    # Konversi ke float64 untuk PCA
+    img_float = gray.astype(np.float64)
+
+    # Batasi n_components sesuai dimensi gambar
+    max_components = min(H, W)
+    n_components = min(n_components, max_components)
+
+    # Latih PCA pada baris-baris gambar
+    pca = PCA(n_components=n_components, svd_solver='full')
+    transformed = pca.fit_transform(img_float)   # shape: (H, n_components)
+
+    # Rekonstruksi gambar dari komponen terbatas
+    reconstructed_float = pca.inverse_transform(transformed)  # shape: (H, W)
+
+    # Clip dan konversi kembali ke uint8
+    reconstructed = np.clip(reconstructed_float, 0, 255).astype(np.uint8)
+
+    # Hitung rasio kompresi
+    # Ukuran asli: H * W piksel
+    # Ukuran terkompresi: H * n_components (skor) + n_components * W (komponen) + n_components (mean)
+    original_size = H * W
+    compressed_size = (H * n_components) + (n_components * W) + n_components
+    compression_ratio = (1 - compressed_size / original_size) * 100
+
+    # Hitung PSNR (Peak Signal-to-Noise Ratio)
+    psnr = calculate_psnr(gray, reconstructed)
+
+    # Total varians yang dijelaskan
+    explained_var = float(np.sum(pca.explained_variance_ratio_)) * 100
+
+    return {
+        'original': gray,
+        'reconstructed': reconstructed,
+        'n_components': n_components,
+        'max_components': max_components,
+        'compression_ratio': compression_ratio,
+        'psnr': psnr,
+        'explained_var': explained_var,
+        'pca': pca,
+        'image_shape': (H, W),
+    }
+
+
+# ==========================================
+# 3. REKONSTRUKSI DENGAN KOMPONEN BERBEDA
+# ==========================================
+def reconstruct_with_k_components(gray_image, k_list=None):
+    """
+    Merekonstruksi gambar dengan berbagai jumlah komponen PCA
+    untuk menunjukkan efek kompresi bertingkat.
+
+    Args:
+        gray_image (np.ndarray): gambar grayscale
+        k_list (list[int]): daftar jumlah komponen yang ingin dicoba
+
+    Returns:
+        list of dict: setiap dict berisi 'k', 'image', 'psnr', 'explained_var'
+    """
+    H, W = gray_image.shape
+    max_k = min(H, W)
+
+    if k_list is None:
+        # Default: coba berbagai tingkat kompresi
+        k_list = [1, 5, 10, 20, 50, 100, 150, max_k]
+
+    # Latih PCA sekali dengan komponen maksimal
+    max_k_used = min(max(k_list), max_k)
+    img_float = gray_image.astype(np.float64)
+    pca_full = PCA(n_components=max_k_used, svd_solver='full')
+    scores_full = pca_full.fit_transform(img_float)  # (H, max_k_used)
+
+    results = []
+    for k in k_list:
+        k = min(k, max_k_used)
+        if k <= 0:
+            continue
+
+        # Gunakan hanya k komponen pertama
+        scores_k = scores_full[:, :k]
+        components_k = pca_full.components_[:k, :]
+        mean = pca_full.mean_
+
+        reconstructed_float = scores_k @ components_k + mean
+        reconstructed = np.clip(reconstructed_float, 0, 255).astype(np.uint8)
+
+        psnr = calculate_psnr(gray_image, reconstructed)
+        explained = float(np.sum(pca_full.explained_variance_ratio_[:k])) * 100
+
+        results.append({
+            'k': k,
+            'image': reconstructed,
+            'psnr': psnr,
+            'explained_var': explained,
+        })
+
+    return results
+
+
+# ==========================================
+# 4. METRIK KUALITAS
+# ==========================================
+def calculate_psnr(original, reconstructed):
+    """
+    Menghitung Peak Signal-to-Noise Ratio (PSNR) dalam dB.
+    Semakin tinggi PSNR, semakin baik kualitas rekonstruksi.
+    - > 40 dB  : kualitas sangat baik
+    - 30–40 dB : kualitas baik
+    - < 30 dB  : kualitas cukup / terlihat perbedaan
+    """
+    orig = original.astype(np.float64)
+    recon = reconstructed.astype(np.float64)
+    mse = np.mean((orig - recon) ** 2)
+    if mse == 0:
+        return float('inf')
+    max_pixel = 255.0
+    psnr = 20 * np.log10(max_pixel / np.sqrt(mse))
+    return round(float(psnr), 2)
+
+
+def calculate_ssim(original, reconstructed):
+    """
+    Menghitung Structural Similarity Index (SSIM).
+    Nilai mendekati 1 = sangat mirip dengan asli.
+    """
+    orig = original.astype(np.float64)
+    recon = reconstructed.astype(np.float64)
+
+    mu1 = np.mean(orig)
+    mu2 = np.mean(recon)
+    sigma1_sq = np.var(orig)
+    sigma2_sq = np.var(recon)
+    sigma12 = np.mean((orig - mu1) * (recon - mu2))
+
+    C1 = (0.01 * 255) ** 2
+    C2 = (0.03 * 255) ** 2
+
+    numerator = (2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)
+    denominator = (mu1 ** 2 + mu2 ** 2 + C1) * (sigma1_sq + sigma2_sq + C2)
+
+    return round(float(numerator / denominator), 4)
+
+
+# ==========================================
+# 5. ALUR EKSEKUSI UTAMA (CLI)
 # ==========================================
 if __name__ == "__main__":
-    # --- TAHAP 1: DATA LATIH ---
-    # Pastikan kamu memiliki folder 'dataset' yang berisi subfolder nama orang [cite: 23, 24, 25]
-    folder_dataset = r"D:\\TEKNIK_INFORMATIKA\SEMESTER 2\ALJABAR LINEAR\\UAS\dataset" 
-    
-    print("Memuat dataset dan mengekstraksi wajah...")
-    X_train, labels = load_dataset(folder_dataset)
-    
-    if len(X_train) == 0:
-        print(f"Error: Tidak ada wajah yang berhasil diekstrak dari folder '{folder_dataset}'.")
-        exit()
+    import sys
 
-    print(f"Berhasil memuat {len(X_train)} gambar wajah.")
+    print("=" * 50)
+    print("  KOMPRESI GAMBAR DENGAN PCA")
+    print("=" * 50)
 
-    # Latih PCA [cite: 177, 178]
-    # Sesuai dokumen, kita gunakan 50 komponen utama (atau maksimal jumlah sampel)
-    n_components = min(50, len(X_train))
-    pca = PCA(n_components=n_components)
-    
-    # Melakukan PCA pada data latih [cite: 179]
-    X_pca = pca.fit_transform(X_train)
-    print(f"Model PCA berhasil dilatih. Total varians: {np.sum(pca.explained_variance_ratio_):.4f}")
+    if len(sys.argv) < 2:
+        print("\nUsage: python pca_1.py <gambar> [n_components]")
+        print("Contoh: python pca_1.py foto.jpg 50\n")
+        sys.exit(0)
 
-    # --- TAHAP 2: DATA UJI ---
-    print("\nMembandingkan wajah...")
-    path_wajah_1 = r"D:\\TEKNIK_INFORMATIKA\SEMESTER 2\ALJABAR LINEAR\\UAS\\s2.jpeg"  # Ganti dengan path foto pertama
-    path_wajah_2 = r"D:\\TEKNIK_INFORMATIKA\SEMESTER 2\ALJABAR LINEAR\\UAS\\s1.jpeg"  # Ganti dengan path foto kedua
-    
-    # Gunakan threshold 0.80 sesuai contoh di dokumen [cite: 137, 211]
-    THRESHOLD_VALUE = 0.75 
-    
-    similarity_score, status = compare_faces(path_wajah_1, path_wajah_2, pca, threshold=THRESHOLD_VALUE)
-    
-    # --- TAMPILKAN HASIL ---
-    print("\n" + "="*40)
-    print("HASIL DETEKSI KEMIRIPAN WAJAH")
-    print("="*40)
-    if similarity_score is not None:
-        print(f"Gambar 1       : {path_wajah_1}")
-        print(f"Gambar 2       : {path_wajah_2}")
-        print(f"Threshold      : {THRESHOLD_VALUE}")
-        print(f"Nilai Cosine   : {similarity_score:.4f}")
-        print(f"Status         : {status}")
-    else:
-        print(f"Gagal memproses: {status}")
-    print("="*40)
+    image_path = sys.argv[1]
+    n_comp = int(sys.argv[2]) if len(sys.argv) >= 3 else 50
+
+    print(f"\nGambar       : {image_path}")
+    print(f"N Components : {n_comp}")
+
+    result = compress_image_pca(image_path, n_components=n_comp)
+
+    print(f"\nUkuran Gambar      : {result['image_shape'][1]} x {result['image_shape'][0]} px")
+    print(f"Komponen Digunakan : {result['n_components']} / {result['max_components']}")
+    print(f"Varians Dijelaskan : {result['explained_var']:.2f}%")
+    print(f"Rasio Kompresi     : {result['compression_ratio']:.2f}%")
+    print(f"PSNR               : {result['psnr']} dB")
+
+    # Simpan gambar rekonstruksi
+    out_path = f"reconstructed_{n_comp}comp_{os.path.basename(image_path)}"
+    cv2.imwrite(out_path, result['reconstructed'])
+    print(f"\nHasil rekonstruksi disimpan ke: {out_path}")
+    print("=" * 50)
